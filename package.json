@@ -1,0 +1,32 @@
+{
+  "name": "image-server",
+  "version": "2.0.0",
+  "description": "Node.js와 Express.js를 사용한 이미지 업로드 서버",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "NODE_ENV=development node server.js",
+    "prod": "NODE_ENV=production node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "image",
+    "upload",
+    "server",
+    "express",
+    "nodejs",
+    "multer"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.0",
+    "express": "^5.1.0",
+    "iconv-lite": "^0.6.3",
+    "multer": "^2.0.2"
+  }
+}
