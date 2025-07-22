@@ -25,6 +25,211 @@ const ALLOWED_MIME_TYPES = process.env.ALLOWED_MIME_TYPES ?
   process.env.ALLOWED_MIME_TYPES.split(',') : 
   ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/bmp'];
 
+// 로그 설정 환경 변수
+const ENABLE_LOGGING = process.env.ENABLE_LOGGING !== 'false';
+const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
+const LOG_FILE = process.env.LOG_FILE || 'logs/server.log';
+const MAX_LOG_LINES = parseInt(process.env.MAX_LOG_LINES) || 5000;
+const LOG_FORMAT = process.env.LOG_FORMAT || 'json';
+
+// 로그 디렉토리 생성
+const logDir = path.dirname(LOG_FILE);
+if (!fs.existsSync(logDir)) {
+  fs.mkdirSync(logDir, { recursive: true });
+}
+
+// 로깅 시스템
+class Logger {
+  constructor() {
+    this.logFile = LOG_FILE;
+    this.maxLines = MAX_LOG_LINES;
+    this.enabled = ENABLE_LOGGING;
+    this.level = LOG_LEVEL;
+  }
+
+  formatMessage(level, message, extra = {}) {
+    const timestamp = new Date().toISOString();
+    const logEntry = {
+      timestamp,
+      level,
+      message,
+      ...extra
+    };
+    return JSON.stringify(logEntry);
+  }
+
+  async writeLog(level, message, extra = {}) {
+    if (!this.enabled) return;
+
+    const logMessage = this.formatMessage(level, message, extra);
+    
+    try {
+      // 로그 파일에 추가
+      await fs.promises.appendFile(this.logFile, logMessage + '\n');
+      
+      // 로그 파일 크기 관리
+      await this.manageLogSize();
+    } catch (error) {
+      console.error('로그 작성 실패:', error);
+    }
+  }
+
+  async manageLogSize() {
+    try {
+      if (!fs.existsSync(this.logFile)) return;
+
+      const content = await fs.promises.readFile(this.logFile, 'utf8');
+      const lines = content.split('\n').filter(line => line.trim() !== '');
+
+      if (lines.length > this.maxLines) {
+        // 첫 번째 줄 삭제하고 새로운 내용으로 파일 덮어쓰기
+        const newLines = lines.slice(1);
+        await fs.promises.writeFile(this.logFile, newLines.join('\n') + '\n');
+      }
+    } catch (error) {
+      console.error('로그 크기 관리 실패:', error);
+    }
+  }
+
+  log(level, message, extra = {}) {
+    // 콘솔에도 출력
+    // if (this.enabled) {
+    //   console.log(`[${level.toUpperCase()}] ${message}`, extra);
+    // }
+    
+    // 파일에 로그 작성
+    this.writeLog(level, message, extra);
+  }
+
+  info(message, extra = {}) {
+    this.log('info', message, extra);
+  }
+
+  warn(message, extra = {}) {
+    this.log('warn', message, extra);
+  }
+
+  error(message, extra = {}) {
+    this.log('error', message, extra);
+  }
+
+  security(message, extra = {}) {
+    this.log('security', message, extra);
+  }
+}
+
+const logger = new Logger();
+
+// 사용자 행동 로깅 미들웨어
+function logUserAction(req, res, next) {
+  if (!ENABLE_LOGGING) {
+    return next();
+  }
+
+  const startTime = Date.now();
+  const originalSend = res.send;
+  const originalJson = res.json;
+
+  // 응답 데이터 캡처
+  let responseData = null;
+  
+  res.send = function(data) {
+    responseData = data;
+    return originalSend.call(this, data);
+  };
+
+  res.json = function(data) {
+    responseData = data;
+    return originalJson.call(this, data);
+  };
+
+  // 요청 완료 시 로그 작성
+  res.on('finish', () => {
+    const endTime = Date.now();
+    const duration = endTime - startTime;
+
+    const logData = {
+      ip: req.ip || req.connection.remoteAddress,
+      userAgent: req.get('User-Agent'),
+      method: req.method,
+      url: req.originalUrl,
+      statusCode: res.statusCode,
+      duration: `${duration}ms`,
+      sessionId: req.session?.id || 'anonymous',
+      isAuthenticated: req.session?.authenticated || false,
+      apiKey: req.headers['x-api-key'] ? '***masked***' : null,
+      referer: req.get('Referer'),
+      contentLength: res.get('Content-Length'),
+      query: Object.keys(req.query).length > 0 ? req.query : null,
+      body: req.method === 'POST' && req.body ? {
+        ...req.body,
+        // 민감한 정보 마스킹
+        password: req.body.password ? '***masked***' : undefined,
+        api_key: req.body.api_key ? '***masked***' : undefined
+      } : null
+    };
+
+    // 파일 업로드 정보 추가
+    if (req.files && req.files.length > 0) {
+      logData.uploadedFiles = req.files.map(file => ({
+        originalName: file.originalname,
+        filename: file.filename,
+        size: file.size,
+        mimetype: file.mimetype
+      }));
+    } else if (req.file) {
+      logData.uploadedFile = {
+        originalName: req.file.originalname,
+        filename: req.file.filename,
+        size: req.file.size,
+        mimetype: req.file.mimetype
+      };
+    }
+
+    // 응답 정보 추가 (에러나 중요한 정보만)
+    if (res.statusCode >= 400 || req.originalUrl.includes('/api/')) {
+      try {
+        if (typeof responseData === 'string') {
+          // HTML 응답은 길이만 기록
+          if (responseData.includes('<!DOCTYPE html>')) {
+            logData.responseType = 'html';
+            logData.responseLength = responseData.length;
+          } else {
+            logData.response = responseData.substring(0, 200) + (responseData.length > 200 ? '...' : '');
+          }
+        } else if (responseData) {
+          // JSON 응답은 전체 기록 (민감한 정보 제외)
+          logData.response = responseData;
+        }
+      } catch (e) {
+        logData.responseError = 'Failed to parse response data';
+      }
+    }
+
+    // 로그 레벨 결정
+    let level = 'info';
+    let message = `${req.method} ${req.originalUrl}`;
+
+    if (res.statusCode >= 500) {
+      level = 'error';
+      message = `서버 오류: ${message}`;
+    } else if (res.statusCode >= 400) {
+      level = 'warn';
+      message = `클라이언트 오류: ${message}`;
+    } else if (req.originalUrl.includes('/auth') || req.originalUrl.includes('/login') || req.originalUrl.includes('/logout')) {
+      level = 'security';
+      message = `인증 관련: ${message}`;
+    } else if (req.originalUrl.includes('/api/')) {
+      level = 'info';
+      message = `API 호출: ${message}`;
+    }
+
+    logger.log(level, message, logData);
+  });
+
+  next();
+}
+
 // CORS 설정
 const corsOptions = {
   origin: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : '*',
@@ -34,6 +239,9 @@ const corsOptions = {
 if (process.env.ENABLE_CORS === 'true') {
   app.use(cors(corsOptions));
 }
+
+// 로깅 미들웨어 적용 (모든 요청에 대해)
+app.use(logUserAction);
 
 // 세션 설정
 app.use(session({
@@ -294,7 +502,10 @@ app.get('/', requireAuth, (req, res) => {
             <!-- 로그아웃 버튼 -->
             <div class="logout-bar">
                 <h1>🖼️ 이미지 서버</h1>
-                <a href="/logout" class="logout-btn">로그아웃</a>
+                <div>
+                    <button onclick="openLogModal()" style="background: #28a745; margin-right: 10px;">📝 로그 보기</button>
+                    <a href="/logout" class="logout-btn">로그아웃</a>
+                </div>
             </div>
             
             <!-- 폴더 관리와 업로드를 한 줄에 배치 -->
@@ -351,6 +562,26 @@ app.get('/', requireAuth, (req, res) => {
                 <br><br>
                 <button onclick="confirmRename()">변경</button>
                 <button onclick="closeRenameModal()">취소</button>
+            </div>
+        </div>
+        
+        <!-- 로그 관리 모달 -->
+        <div id="logModal" class="modal">
+            <div class="modal-content" style="width: 80%; max-width: 1000px; max-height: 80%; overflow-y: auto;">
+                <span class="close" onclick="closeLogModal()">&times;</span>
+                <h3>📝 서버 로그 관리</h3>
+                <div style="margin-bottom: 15px;">
+                    <button onclick="loadLogs()" style="background: #007cba;">새로고침</button>
+                    <select id="logLines" style="margin-left: 10px;">
+                        <option value="50">최근 50줄</option>
+                        <option value="100" selected>최근 100줄</option>
+                        <option value="200">최근 200줄</option>
+                        <option value="500">최근 500줄</option>
+                        <option value="1000">최근 1000줄</option>
+                    </select>
+                </div>
+                <div id="logContent" style="background: #f8f9fa; padding: 15px; border-radius: 5px; font-family: monospace; font-size: 12px; max-height: 400px; overflow-y: auto; white-space: pre-wrap;"></div>
+                <div id="logStats" style="margin-top: 10px; font-size: 12px; color: #666;"></div>
             </div>
         </div>
         
@@ -652,6 +883,48 @@ app.get('/', requireAuth, (req, res) => {
                     }
                 } catch (error) {
                     alert('이름 변경 실패: ' + error.message);
+                }
+            }
+            
+            // 로그 관리 함수들
+            function openLogModal() {
+                document.getElementById('logModal').style.display = 'block';
+                loadLogs();
+            }
+            
+            function closeLogModal() {
+                document.getElementById('logModal').style.display = 'none';
+            }
+            
+            async function loadLogs() {
+                const lines = document.getElementById('logLines').value;
+                try {
+                    const response = await fetch('/logs?lines=' + lines);
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        const logContent = document.getElementById('logContent');
+                        const logStats = document.getElementById('logStats');
+                        
+                        if (result.logs.length === 0) {
+                            logContent.textContent = '로그가 없습니다.';
+                        } else {
+                            logContent.textContent = result.logs.map(log => {
+                                const time = new Date(log.timestamp).toLocaleString('ko-KR');
+                                const level = log.level.toUpperCase().padEnd(8);
+                                return '[' + time + '] [' + level + '] ' + log.message + 
+                                       (Object.keys(log).length > 3 ? ' | ' + JSON.stringify(log, null, 2) : '');
+                            }).join('\\n\\n');
+                        }
+                        
+                        logStats.textContent = '총 로그 라인: ' + result.totalLines + 
+                                             ' | 최대 허용: ' + result.maxLines + 
+                                             ' | 표시된 로그: ' + result.logs.length + '개';
+                    } else {
+                        alert('로그 로드 실패: ' + result.error);
+                    }
+                } catch (error) {
+                    alert('로그 로드 실패: ' + error.message);
                 }
             }
         </script>
@@ -1238,6 +1511,71 @@ app.put('/images/:folder/:filename/rename', requireAuth, (req, res) => {
   });
 });
 
+// 로그 관리 API (웹 인터페이스용)
+app.get('/logs', requireAuth, (req, res) => {
+  const lines = parseInt(req.query.lines) || 100;
+  
+  try {
+    if (!fs.existsSync(LOG_FILE)) {
+      return res.json({ success: true, logs: [], message: '로그 파일이 없습니다.' });
+    }
+
+    const content = fs.readFileSync(LOG_FILE, 'utf8');
+    const logLines = content.split('\n').filter(line => line.trim() !== '');
+    
+    // 최신 로그부터 반환
+    const recentLogs = logLines.slice(-lines).reverse().map(line => {
+      try {
+        return JSON.parse(line);
+      } catch (e) {
+        return { timestamp: new Date().toISOString(), level: 'error', message: 'Parse error', raw: line };
+      }
+    });
+
+    res.json({
+      success: true,
+      logs: recentLogs,
+      totalLines: logLines.length,
+      maxLines: MAX_LOG_LINES,
+      message: `최근 ${recentLogs.length}개의 로그를 조회했습니다.`
+    });
+  } catch (error) {
+    logger.error('로그 조회 실패', { error: error.message });
+    res.status(500).json({ success: false, error: '로그 조회에 실패했습니다.' });
+  }
+});
+
+// 로그 클리어 API (웹 인터페이스용)
+app.delete('/logs', requireAuth, (req, res) => {
+  try {
+    if (fs.existsSync(LOG_FILE)) {
+      fs.writeFileSync(LOG_FILE, '');
+      logger.info('로그 파일이 관리자에 의해 삭제되었습니다', { 
+        sessionId: req.session.id,
+        ip: req.ip 
+      });
+    }
+    res.json({ success: true, message: '로그가 삭제되었습니다.' });
+  } catch (error) {
+    logger.error('로그 삭제 실패', { error: error.message });
+    res.status(500).json({ success: false, error: '로그 삭제에 실패했습니다.' });
+  }
+});
+
+// 로그 설정 조회 API (웹 인터페이스용)
+app.get('/logs/config', requireAuth, (req, res) => {
+  res.json({
+    success: true,
+    config: {
+      enabled: ENABLE_LOGGING,
+      level: LOG_LEVEL,
+      file: LOG_FILE,
+      maxLines: MAX_LOG_LINES,
+      format: LOG_FORMAT
+    }
+  });
+});
+
 // 에러 핸들러
 app.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
@@ -1257,10 +1595,32 @@ app.use((error, req, res, next) => {
 });
 
 app.listen(PORT, () => {
+  const startupInfo = {
+    server: 'Image Upload Server',
+    version: '3.0.0',
+    port: PORT,
+    host: HOST,
+    uploadDir: uploadDir,
+    maxFileSize: `${Math.round(MAX_FILE_SIZE / 1024 / 1024)}MB`,
+    maxFiles: MAX_FILES_PER_UPLOAD,
+    corsEnabled: process.env.ENABLE_CORS === 'true',
+    loggingEnabled: ENABLE_LOGGING,
+    logFile: LOG_FILE,
+    maxLogLines: MAX_LOG_LINES
+  };
+
   console.log(`🚀 이미지 서버가 http://${HOST}:${PORT} 에서 실행 중입니다`);
   console.log(`📁 이미지 저장 경로: ${uploadDir}`);
   console.log(`🌐 이미지 접근 URL 예시: http://${HOST}:${PORT}/images/filename.jpg`);
   console.log(`⚙️  최대 파일 크기: ${Math.round(MAX_FILE_SIZE / 1024 / 1024)}MB`);
   console.log(`📊 최대 동시 업로드: ${MAX_FILES_PER_UPLOAD}개 파일`);
   console.log(`🔒 CORS 활성화: ${process.env.ENABLE_CORS === 'true' ? '예' : '아니오'}`);
+  console.log(`📝 로깅 활성화: ${ENABLE_LOGGING ? '예' : '아니오'}`);
+  if (ENABLE_LOGGING) {
+    console.log(`📄 로그 파일: ${LOG_FILE}`);
+    console.log(`📏 최대 로그 라인: ${MAX_LOG_LINES}줄`);
+  }
+
+  // 서버 시작 로그 남기기
+  logger.info('이미지 서버가 시작되었습니다', startupInfo);
 });
