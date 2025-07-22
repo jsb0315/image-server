@@ -1,5 +1,90 @@
 # 변경 이력 (Changelog)
 
+## [v3.0.0] - 2025-07-22
+
+### 🔐 보안 강화
+- **세션 기반 인증 시스템**
+  - 웹 인터페이스용 로그인/로그아웃 기능 추가
+  - express-session을 이용한 안전한 세션 관리
+  - URL 쿼리 파라미터 대신 POST 방식 인증으로 보안 강화
+
+- **API 키 기반 외부 API 인증**
+  - 신뢰할 수 있는 외부 시스템용 API 키 인증
+  - 헤더 또는 쿼리 파라미터로 API 키 전달 지원
+  - 웹 인터페이스와 분리된 독립적인 API 시스템
+
+### 🚀 새로운 외부 API 엔드포인트
+- **`POST /api/upload`** - 다중 이미지 업로드 (외부 시스템용)
+- **`POST /api/upload-single`** - 단일 이미지 업로드 (외부 시스템용)
+- **`GET /api/images`** - 이미지 목록 조회 (외부 시스템용)
+- **`DELETE /api/images/:folder/:filename`** - 이미지 삭제 (외부 시스템용)
+- **`GET /api/status`** - API 상태 확인
+- **`GET /api`** - API 사용법 가이드
+
+### 🎨 UI/UX 개선
+- 로그인 페이지 디자인 추가
+- 메인 페이지 상단에 로그아웃 버튼 추가
+- 서버 제목과 브랜딩 요소 추가
+
+### 🏗️ 기술적 개선
+- 인증이 필요한 모든 엔드포인트에 미들웨어 적용
+- API 응답 형식 표준화 (success, message, data 구조)
+- 환경 변수 확장 (SESSION_SECRET, API_KEY)
+- api-uploads 기본 폴더 분리로 외부 API와 웹 인터페이스 구분
+
+### 📋 API 사용 예시
+
+#### 외부 시스템용 API 키 인증
+```bash
+# 헤더로 API 키 전달
+curl -H "x-api-key: YOUR_API_KEY" "http://localhost:31533/api/status"
+
+# 쿼리 파라미터로 API 키 전달
+curl "http://localhost:31533/api/status?api_key=YOUR_API_KEY"
+```
+
+#### 단일 이미지 업로드
+```bash
+curl -X POST \
+  -H "x-api-key: YOUR_API_KEY" \
+  -F "image=@/path/to/image.jpg" \
+  -F "folder=my-project" \
+  http://localhost:31533/api/upload-single
+```
+
+#### 다중 이미지 업로드
+```bash
+curl -X POST \
+  -H "x-api-key: YOUR_API_KEY" \
+  -F "image=@image1.jpg" \
+  -F "image=@image2.png" \
+  -F "folder=my-gallery" \
+  http://localhost:31533/api/upload
+```
+
+#### 이미지 목록 조회
+```bash
+curl -H "x-api-key: YOUR_API_KEY" \
+  "http://localhost:31533/api/images?folder=my-project"
+```
+
+#### 이미지 삭제
+```bash
+curl -X DELETE \
+  -H "x-api-key: YOUR_API_KEY" \
+  http://localhost:31533/api/images/my-project/image.jpg
+```
+
+### 🔧 환경 변수 추가
+```env
+# 새로 추가된 환경 변수
+ACCESS_PASSWORD=your_web_password
+SESSION_SECRET=your_session_secret_key
+API_KEY=your_api_key_for_external_systems
+```
+
+---
+
 ## [v2.0.0] - 2025-07-21
 
 ### 🆕 새로운 기능

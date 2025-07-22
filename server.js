@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const iconv = require('iconv-lite');
+const session = require('express-session');
 require('dotenv').config();
 
 const app = express();
@@ -12,6 +13,9 @@ const app = express();
 const PORT = process.env.PORT || 31533;
 const HOST = process.env.HOST || 'localhost';
 const UPLOAD_DIR = process.env.UPLOAD_DIR || 'uploads';
+const ACCESS_PASSWORD = process.env.ACCESS_PASSWORD || '앙기모띠123';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'defaultSessionSecret123';
+const API_KEY = process.env.API_KEY || 'defaultApiKey123';
 const MAX_FILE_SIZE = parseInt(process.env.MAX_FILE_SIZE) || 10 * 1024 * 1024; // 10MB
 const MAX_FILES_PER_UPLOAD = parseInt(process.env.MAX_FILES_PER_UPLOAD) || 10;
 const ALLOWED_EXTENSIONS = process.env.ALLOWED_IMAGE_EXTENSIONS ? 
@@ -30,6 +34,17 @@ const corsOptions = {
 if (process.env.ENABLE_CORS === 'true') {
   app.use(cors(corsOptions));
 }
+
+// 세션 설정
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: { 
+    secure: false, // HTTPS가 아닌 환경에서는 false
+    maxAge: 24 * 60 * 60 * 1000 // 24시간
+  }
+}));
 
 // JSON 파싱
 app.use(express.json());
@@ -108,8 +123,129 @@ const upload = multer({
 // 정적 파일 제공 (폴더 구조 지원)
 app.use('/images', express.static(uploadDir));
 
-// 메인 페이지
-app.get('/', (req, res) => {
+// 로그인 페이지
+app.get('/login', (req, res) => {
+  const error = req.query.error;
+  
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>이미지 서버 로그인</title>
+        <style>
+            body { 
+                font-family: Arial, sans-serif; 
+                display: flex; 
+                justify-content: center; 
+                align-items: center; 
+                height: 100vh; 
+                margin: 0; 
+                background-color: #f5f5f5; 
+            }
+            .login-container { 
+                background: white; 
+                padding: 40px; 
+                border-radius: 10px; 
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1); 
+                text-align: center; 
+                max-width: 400px; 
+                width: 100%; 
+            }
+            .login-container h2 { 
+                color: #333; 
+                margin-bottom: 20px; 
+            }
+            .login-container p { 
+                color: #666; 
+                margin-bottom: 30px; 
+            }
+            .login-container input { 
+                width: 100%; 
+                padding: 12px; 
+                border: 1px solid #ddd; 
+                border-radius: 5px; 
+                margin-bottom: 20px; 
+                box-sizing: border-box; 
+                font-size: 16px; 
+            }
+            .login-container button { 
+                width: 100%; 
+                padding: 12px; 
+                background: #007cba; 
+                color: white; 
+                border: none; 
+                border-radius: 5px; 
+                cursor: pointer; 
+                font-size: 16px; 
+            }
+            .login-container button:hover { 
+                background: #005a8a; 
+            }
+            .error { 
+                color: #dc3545; 
+                margin-bottom: 20px; 
+                font-size: 14px; 
+            }
+        </style>
+    </head>
+    <body>
+        <div class="login-container">
+            <h2>🔒 이미지 서버 로그인</h2>
+            <p>이 서버에 접근하려면 비밀번호가 필요합니다.</p>
+            ${error ? '<div class="error">잘못된 비밀번호입니다.</div>' : ''}
+            <form action="/auth" method="POST">
+                <input type="password" name="password" placeholder="비밀번호를 입력하세요" required>
+                <button type="submit">로그인</button>
+            </form>
+        </div>
+    </body>
+    </html>
+  `);
+});
+
+// 인증 처리
+app.post('/auth', express.urlencoded({ extended: true }), (req, res) => {
+  const { password } = req.body;
+  
+  if (password === ACCESS_PASSWORD) {
+    req.session.authenticated = true;
+    res.redirect('/');
+  } else {
+    res.redirect('/login?error=1');
+  }
+});
+
+// 로그아웃
+app.get('/logout', (req, res) => {
+  req.session.destroy();
+  res.redirect('/login');
+});
+
+// 인증 미들웨어
+function requireAuth(req, res, next) {
+  if (req.session.authenticated) {
+    next();
+  } else {
+    res.redirect('/login');
+  }
+}
+
+// API 키 인증 미들웨어
+function requireApiKey(req, res, next) {
+  const apiKey = req.headers['x-api-key'] || req.query.api_key;
+  
+  if (!apiKey || apiKey !== API_KEY) {
+    return res.status(401).json({ 
+      error: 'Unauthorized: Invalid or missing API key',
+      message: 'API 키가 필요합니다. 헤더에 x-api-key 또는 쿼리 파라미터 api_key를 포함해주세요.'
+    });
+  }
+  
+  next();
+}
+
+// 메인 페이지 (인증 필요)
+app.get('/', requireAuth, (req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html>
@@ -117,14 +253,17 @@ app.get('/', (req, res) => {
         <title>이미지 서버</title>
         <style>
             body { font-family: Arial, sans-serif; margin: 0; padding: 20px; height: 100vh; overflow: hidden; }
+            h1 { margin: 0px;}
+            h3 { margin: 0px;}
             .container { max-width: 1200px; margin: 0 auto; height: calc(100vh - 40px); display: flex; flex-direction: column; }
             .header { margin-bottom: 20px; }
             .controls-row { display: flex; gap: 20px; margin-bottom: 20px; }
             .folder-controls { flex: 1; padding: 15px; background: #f8f9fa; border-radius: 5px; border: 1px solid #ddd; }
+            .folder-controls .controls { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; }
             .upload-area { flex: 1; border: 2px dashed #ccc; padding: 20px; text-align: center; border-radius: 5px; }
             .folder-section { flex: 1; padding: 15px; border: 1px solid #ddd; border-radius: 5px; display: flex; flex-direction: column; overflow: hidden; }
-            .folder-section h3 { margin-top: 0; margin-bottom: 15px; }
-            .folder-section .controls { margin-bottom: 15px; }
+            .folder-section .controls { display: flex; margin-bottom: 15px;align-items: center;
+    justify-content: space-between; }
             .image-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 20px; overflow-y: auto; flex: 1; padding-right: 10px; }
             .image-item { border: 1px solid #ddd; padding: 10px; border-radius: 5px; position: relative; height: fit-content; }
             .image-item img { width: 100%; height: 150px; object-fit: cover; }
@@ -145,33 +284,40 @@ app.get('/', (req, res) => {
             .image-grid::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
             .image-grid::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
             .image-grid::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
+            .logout-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding: 10px; background: #f8f9fa; border-radius: 5px; }
+            .logout-btn { background: #dc3545; color: white; text-decoration: none; padding: 8px 16px; border-radius: 3px; font-size: 14px; }
+            .logout-btn:hover { background: #c82333; }
         </style>
     </head>
     <body>
         <div class="container">
-            <div class="header">
-                <h1>이미지 서버</h1>
+            <!-- 로그아웃 버튼 -->
+            <div class="logout-bar">
+                <h1>🖼️ 이미지 서버</h1>
+                <a href="/logout" class="logout-btn">로그아웃</a>
             </div>
             
             <!-- 폴더 관리와 업로드를 한 줄에 배치 -->
             <div class="controls-row">
                 <!-- 폴더 관리 -->
                 <div class="folder-controls">
-                    <h3>폴더 관리</h3>
-                    <div>
-                        <input type="text" id="newFolderName" placeholder="새 폴더 이름">
-                        <button onclick="createFolder()">폴더 생성</button>
+                    <div class="controls">
+                      <h3>폴더 관리</h3>
+                      <div style="margin-top: 5px;">
+                          <span class="current-folder" id="currentFolderDisplay">루트 폴더</span>
+                      </div>
                     </div>
-                    <div style="margin-top: 10px;">
-                        <label>현재 폴더: </label>
-                        <select id="folderSelect" onchange="selectFolder()">
-                            <option value="">루트 폴더</option>
-                        </select>
-                        <button onclick="loadFolders()">새로고침</button>
-                    </div>
-                    <div style="margin-top: 5px;">
-                        <span class="current-folder" id="currentFolderDisplay">루트 폴더</span>
-                    </div>
+                      <div>
+                          <input type="text" id="newFolderName" placeholder="새 폴더 이름">
+                          <button onclick="createFolder()">폴더 생성</button>
+                      </div>
+                      <div style="margin-top: 10px;">
+                          <label>현재 폴더: </label>
+                          <select id="folderSelect" onchange="selectFolder()">
+                              <option value="">루트 폴더</option>
+                          </select>
+                          <button onclick="loadFolders()">새로고침</button>
+                      </div>
                 </div>
                 
                 <!-- 업로드 영역 -->
@@ -514,8 +660,299 @@ app.get('/', (req, res) => {
   `);
 });
 
+// ==================== 외부 API 엔드포인트 ====================
+
+// 외부 시스템용 이미지 업로드 API
+app.post('/api/upload', requireApiKey, upload.array('image', MAX_FILES_PER_UPLOAD), (req, res) => {
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'No files uploaded',
+      message: '업로드할 파일이 없습니다.'
+    });
+  }
+  
+  const host = req.get('host');
+  const protocol = req.protocol;
+  const folder = req.body.folder || 'api-uploads'; // 기본적으로 api-uploads 폴더에 저장
+  
+  const uploadedFiles = [];
+  const errors = [];
+  
+  for (const file of req.files) {
+    try {
+      // API 업로드는 항상 api-uploads 폴더 또는 지정된 폴더에 저장
+      const targetDir = path.join(uploadDir, folder);
+      
+      // 폴더가 존재하지 않으면 생성
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+      
+      const oldPath = file.path;
+      const newPath = path.join(targetDir, file.filename);
+      
+      // 파일을 지정된 폴더로 이동
+      fs.renameSync(oldPath, newPath);
+      
+      const relativePath = `${folder}/${file.filename}`;
+      const imageUrl = `${protocol}://${host}/images/${relativePath}`;
+      
+      uploadedFiles.push({
+        filename: file.filename,
+        originalName: file.originalname,
+        url: imageUrl,
+        size: file.size,
+        folder: folder
+      });
+    } catch (error) {
+      console.error('파일 처리 실패:', error);
+      errors.push({
+        filename: file.originalname,
+        error: '파일 처리에 실패했습니다.'
+      });
+    }
+  }
+  
+  if (uploadedFiles.length === 0) {
+    return res.status(500).json({ 
+      success: false,
+      error: '모든 파일 업로드에 실패했습니다.',
+      errors: errors
+    });
+  }
+  
+  const response = {
+    success: true,
+    message: `${uploadedFiles.length}개 파일 업로드 성공`,
+    data: {
+      files: uploadedFiles,
+      count: uploadedFiles.length
+    }
+  };
+  
+  if (errors.length > 0) {
+    response.errors = errors;
+    response.message += `, ${errors.length}개 파일 실패`;
+  }
+  
+  res.json(response);
+});
+
+// 외부 시스템용 단일 이미지 업로드 API (더 간단한 응답)
+app.post('/api/upload-single', requireApiKey, upload.single('image'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'No file uploaded',
+      message: '업로드할 파일이 없습니다.'
+    });
+  }
+  
+  try {
+    const host = req.get('host');
+    const protocol = req.protocol;
+    const folder = req.body.folder || 'api-uploads';
+    
+    // API 업로드는 항상 api-uploads 폴더 또는 지정된 폴더에 저장
+    const targetDir = path.join(uploadDir, folder);
+    
+    // 폴더가 존재하지 않으면 생성
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+    
+    const oldPath = req.file.path;
+    const newPath = path.join(targetDir, req.file.filename);
+    
+    // 파일을 지정된 폴더로 이동
+    fs.renameSync(oldPath, newPath);
+    
+    const relativePath = `${folder}/${req.file.filename}`;
+    const imageUrl = `${protocol}://${host}/images/${relativePath}`;
+    
+    res.json({
+      success: true,
+      message: '파일 업로드 성공',
+      data: {
+        filename: req.file.filename,
+        originalName: req.file.originalname,
+        url: imageUrl,
+        size: req.file.size,
+        folder: folder
+      }
+    });
+    
+  } catch (error) {
+    console.error('파일 처리 실패:', error);
+    res.status(500).json({
+      success: false,
+      error: '파일 처리에 실패했습니다.',
+      message: error.message
+    });
+  }
+});
+
+// 외부 시스템용 이미지 목록 조회 API
+app.get('/api/images', requireApiKey, (req, res) => {
+  const folder = req.query.folder || 'api-uploads';
+  const targetDir = path.join(uploadDir, folder);
+  
+  if (!fs.existsSync(targetDir)) {
+    return res.json({
+      success: true,
+      message: '폴더가 존재하지 않습니다.',
+      data: {
+        files: [],
+        count: 0,
+        folder: folder
+      }
+    });
+  }
+  
+  fs.readdir(targetDir, (err, files) => {
+    if (err) {
+      return res.status(500).json({ 
+        success: false,
+        error: 'Unable to read directory',
+        message: '디렉토리를 읽을 수 없습니다.'
+      });
+    }
+    
+    const host = req.get('host');
+    const protocol = req.protocol;
+    
+    const imageFiles = files.filter(file => 
+      /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(file)
+    ).map(file => {
+      const filePath = path.join(targetDir, file);
+      const stats = fs.statSync(filePath);
+      const relativePath = `${folder}/${file}`;
+      
+      return {
+        filename: file,
+        url: `${protocol}://${host}/images/${relativePath}`,
+        size: stats.size,
+        uploadDate: stats.mtime,
+        folder: folder
+      };
+    });
+    
+    // 업로드 날짜 기준 내림차순 정렬
+    imageFiles.sort((a, b) => new Date(b.uploadDate) - new Date(a.uploadDate));
+    
+    res.json({
+      success: true,
+      message: `${imageFiles.length}개의 이미지를 찾았습니다.`,
+      data: {
+        files: imageFiles,
+        count: imageFiles.length,
+        folder: folder
+      }
+    });
+  });
+});
+
+// 외부 시스템용 이미지 삭제 API
+app.delete('/api/images/:folder/:filename', requireApiKey, (req, res) => {
+  const folder = req.params.folder;
+  const filename = req.params.filename;
+  const filePath = path.join(uploadDir, folder, filename);
+  
+  fs.unlink(filePath, (err) => {
+    if (err) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'File not found',
+        message: '파일을 찾을 수 없습니다.'
+      });
+    }
+    
+    res.json({ 
+      success: true,
+      message: '파일이 성공적으로 삭제되었습니다.',
+      data: {
+        filename: filename,
+        folder: folder
+      }
+    });
+  });
+});
+
+// API 사용법 가이드 (인증 없이 접근 가능)
+app.get('/api', (req, res) => {
+  res.json({
+    title: "Image Upload Server API",
+    version: "1.0.0",
+    description: "외부 시스템에서 이미지를 업로드하고 관리할 수 있는 API",
+    authentication: {
+      type: "API Key",
+      header: "x-api-key",
+      query: "api_key",
+      note: "요청 시 헤더에 'x-api-key: YOUR_API_KEY' 또는 쿼리 파라미터 '?api_key=YOUR_API_KEY'를 포함해주세요."
+    },
+    endpoints: {
+      "POST /api/upload": {
+        description: "다중 이미지 업로드",
+        parameters: {
+          image: "파일 (multiple)",
+          folder: "폴더명 (선택사항, 기본값: api-uploads)"
+        },
+        example: "curl -X POST -H 'x-api-key: YOUR_API_KEY' -F 'image=@image1.jpg' -F 'image=@image2.png' -F 'folder=my-folder' http://localhost:31533/api/upload"
+      },
+      "POST /api/upload-single": {
+        description: "단일 이미지 업로드",
+        parameters: {
+          image: "파일",
+          folder: "폴더명 (선택사항, 기본값: api-uploads)"
+        },
+        example: "curl -X POST -H 'x-api-key: YOUR_API_KEY' -F 'image=@image.jpg' -F 'folder=my-folder' http://localhost:31533/api/upload-single"
+      },
+      "GET /api/images": {
+        description: "이미지 목록 조회",
+        parameters: {
+          folder: "폴더명 (쿼리 파라미터, 기본값: api-uploads)"
+        },
+        example: "curl -H 'x-api-key: YOUR_API_KEY' 'http://localhost:31533/api/images?folder=my-folder'"
+      },
+      "DELETE /api/images/:folder/:filename": {
+        description: "이미지 삭제",
+        example: "curl -X DELETE -H 'x-api-key: YOUR_API_KEY' http://localhost:31533/api/images/my-folder/image.jpg"
+      },
+      "GET /api/status": {
+        description: "API 상태 확인",
+        example: "curl -H 'x-api-key: YOUR_API_KEY' http://localhost:31533/api/status"
+      }
+    },
+    response_format: {
+      success: true,
+      message: "설명 메시지",
+      data: "응답 데이터",
+      errors: "에러 목록 (있는 경우)"
+    }
+  });
+});
+
+// API 상태 확인 엔드포인트
+app.get('/api/status', requireApiKey, (req, res) => {
+  res.json({
+    success: true,
+    message: 'API가 정상적으로 작동 중입니다.',
+    data: {
+      server: 'Image Upload Server',
+      version: '1.0.0',
+      timestamp: new Date().toISOString(),
+      maxFileSize: `${Math.round(MAX_FILE_SIZE / 1024 / 1024)}MB`,
+      maxFiles: MAX_FILES_PER_UPLOAD,
+      allowedExtensions: ALLOWED_EXTENSIONS
+    }
+  });
+});
+
+// ==================== 웹 인터페이스용 엔드포인트 ====================
+
 // 이미지 업로드 API (다중 파일 지원)
-app.post('/upload', upload.array('image', MAX_FILES_PER_UPLOAD), (req, res) => {
+app.post('/upload', requireAuth, upload.array('image', MAX_FILES_PER_UPLOAD), (req, res) => {
   if (!req.files || req.files.length === 0) {
     return res.status(400).json({ error: 'No files uploaded' });
   }
@@ -596,7 +1033,7 @@ app.post('/upload', upload.array('image', MAX_FILES_PER_UPLOAD), (req, res) => {
 });
 
 // 폴더 생성 API
-app.post('/create-folder', (req, res) => {
+app.post('/create-folder', requireAuth, (req, res) => {
   const { folderName } = req.body;
   
   if (!folderName || folderName.trim() === '') {
@@ -618,7 +1055,7 @@ app.post('/create-folder', (req, res) => {
 });
 
 // 폴더 목록 조회 API
-app.get('/folders', (req, res) => {
+app.get('/folders', requireAuth, (req, res) => {
   fs.readdir(uploadDir, { withFileTypes: true }, (err, files) => {
     if (err) {
       return res.status(500).json({ error: 'Unable to read directory' });
@@ -633,7 +1070,7 @@ app.get('/folders', (req, res) => {
 });
 
 // 특정 폴더의 이미지 목록 조회 API
-app.get('/images-list', (req, res) => {
+app.get('/images-list', requireAuth, (req, res) => {
   const targetDir = uploadDir;
   
   fs.readdir(targetDir, (err, files) => {
@@ -666,7 +1103,7 @@ app.get('/images-list', (req, res) => {
   });
 });
 
-app.get('/images-list/:folder', (req, res) => {
+app.get('/images-list/:folder', requireAuth, (req, res) => {
   const folder = req.params.folder;
   const targetDir = path.join(uploadDir, folder);
   
@@ -706,7 +1143,7 @@ app.get('/images-list/:folder', (req, res) => {
 });
 
 // 루트 디렉토리 이미지 삭제 API
-app.delete('/images/:filename', (req, res) => {
+app.delete('/images/:filename', requireAuth, (req, res) => {
   const filename = req.params.filename;
   const filePath = path.join(uploadDir, filename);
   
@@ -720,7 +1157,7 @@ app.delete('/images/:filename', (req, res) => {
 });
 
 // 폴더 내 이미지 삭제 API
-app.delete('/images/:folder/:filename', (req, res) => {
+app.delete('/images/:folder/:filename', requireAuth, (req, res) => {
   const folder = req.params.folder;
   const filename = req.params.filename;
   const filePath = path.join(uploadDir, folder, filename);
@@ -735,7 +1172,7 @@ app.delete('/images/:folder/:filename', (req, res) => {
 });
 
 // 루트 디렉토리 이미지 이름 변경 API
-app.put('/images/:filename/rename', (req, res) => {
+app.put('/images/:filename/rename', requireAuth, (req, res) => {
   const filename = req.params.filename;
   const { newName } = req.body;
   
@@ -768,7 +1205,7 @@ app.put('/images/:filename/rename', (req, res) => {
 });
 
 // 폴더 내 이미지 이름 변경 API
-app.put('/images/:folder/:filename/rename', (req, res) => {
+app.put('/images/:folder/:filename/rename', requireAuth, (req, res) => {
   const folder = req.params.folder;
   const filename = req.params.filename;
   const { newName } = req.body;
